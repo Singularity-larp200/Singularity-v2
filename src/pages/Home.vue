@@ -123,6 +123,16 @@ import { siDiscord } from 'simple-icons';
     }
   }
 
+  @keyframes searchbarAnim {
+    from {
+      width: 100%;
+    }
+
+    to {
+      width: 106%;
+    }
+  }
+
   .homepageSearchbar {
     display: grid;
     justify-items: center;
@@ -143,6 +153,12 @@ import { siDiscord } from 'simple-icons';
     text-align: center;
     outline: none;
     box-shadow: 0 6px 16px rgba(0, 0, 0, 0.22);
+    transition: width 220ms ease-out;
+  }
+
+  .homepageSearchbar:hover input {
+    width: 106%;
+    animation: searchbarAnim 200ms ease-out;
   }
 
   .homepageSearchbar input::placeholder {
@@ -160,8 +176,13 @@ import { siDiscord } from 'simple-icons';
     .titleArea,
     .homepageSearchbar,
     .discordInvite,
-    .siteTitle span {
+    .siteTitle span,
+    .homepageSearchbar input {
       animation: none;
+    }
+
+    .homepageSearchbar:hover input {
+      width: 100%;
     }
   }
 </style>
