@@ -1,5 +1,7 @@
 const OBF_KEY = [173, 91, 202, 17, 138, 64, 229, 53];
 
+const listKeys = (value) => (value || "").split(",").map((s) => s.trim()).filter(Boolean);
+
 const PROVIDERS = {
 	gemini: {
 		keys: "GEMINI_KEYS",
@@ -13,11 +15,14 @@ const PROVIDERS = {
 		keys: "CLAUDE_KEYS",
 		models: ["claude-sonnet-5-5", "claude-haiku-5-5", "claude-opus-5-5"],
 	},
-	ollama: {
-		keys: "OLLAMA_KEYS",
-		models: ["gpt-oss:120b", "gpt-oss:20b", "deepseek-v3.1:671b"],
+	groq: {
+		keys: "GROQ_KEYS",
+		models: listKeys(process.env.GROQ_MODELS).length
+			? listKeys(process.env.GROQ_MODELS)
+			: ["qwen/qwen3-32b", "llama-3.3-70b-versatile"],
 	},
 };
+
 const RETRY_STATUSES = [401, 403, 429, 500, 502, 503];
 const MAX_CONTENT_CHARS = 4000000;
 const MAX_TURNS = 40;
@@ -26,8 +31,6 @@ const IMPORT_MAX_TRACKS = 300;
 
 const IMPORT_HOSTS = /(^|\.)(youtube\.com|youtu\.be|spotify\.com|spotify\.link)$/i;
 const SHORT_LINK_HOSTS = /^(spotify\.link|youtu\.be)$/i;
-
-const listKeys = (value) => (value || "").split(",").map((s) => s.trim()).filter(Boolean);
 
 const clamp = (value, fallback, min, max) => {
 	const n = Number(value);
@@ -93,12 +96,13 @@ async function youtubeSearch(rawQuery, rawLimit, reply, res) {
 			}
 			lastStatus = yt.status;
 			if (yt.status !== 403 && yt.status !== 400) break;
-		} catch {
+		} catch (err) {
+			console.error("youtubeSearch fetch failed:", err);
 			lastStatus = 502;
 		}
 	}
 
-	return reply(503, { error: " exhausted or unavailable", status: lastStatus });
+	return reply(503, { error: "error or smth", status: lastStatus });
 }
 
 class ImportError extends Error {}
@@ -121,7 +125,7 @@ async function resolveShortLink(rawUrl) {
 
 async function ytApi(path, params) {
 	const keys = listKeys(process.env.YT_KEYS);
-	if (!keys.length) throw new ImportError("No configuration set on this domain");
+	if (!keys.length) throw new ImportError("configured wrong or smth idk.");
 	const start = Math.floor(Math.random() * keys.length);
 	let lastMsg = "YouTube request failed";
 	for (let i = 0; i < keys.length; i++) {
@@ -136,6 +140,7 @@ async function ytApi(path, params) {
 			if (r.status !== 403 && r.status !== 400) break;
 		} catch (err) {
 			if (err instanceof ImportError) throw err;
+			console.error("ytApi fetch failed:", err);
 		}
 	}
 	throw new ImportError(lastMsg);
@@ -145,7 +150,7 @@ async function importYouTube(u) {
 	const list = u.searchParams.get("list");
 	if (!list) throw new ImportError("No playlist ID in that YouTube link.");
 	if (/^RD/.test(list)) {
-		throw new ImportError("Use a regular playlist. omg an actual dumbass");
+		throw new ImportError("Please use a regular playlist.");
 	}
 
 	let name = "";
@@ -195,7 +200,7 @@ async function importSpotify(u) {
 	try {
 		entity = JSON.parse(json[1]).props.pageProps.state.data.entity;
 	} catch {
-		throw new ImportError("Spotify changed their page format. Import is unavailable right now.");
+		throw new ImportError("Spotify changed their page format. womp womp .");
 	}
 	const sources = (entity.coverArt && entity.coverArt.sources) || [];
 	const art = sources.length ? sources[sources.length - 1].url : "";
@@ -216,7 +221,7 @@ async function importPlaylist(rawUrl, reply, res) {
 		u = await resolveShortLink(input);
 	} catch (err) {
 		if (err instanceof ImportError) return reply(400, { error: err.message });
-		return reply(400, { error: "That doesn't look like a valid link." });
+		return reply(400, { error: "That doesn't look like a valid link DUMB FUCKING SHIT." });
 	}
 
 	try {
@@ -231,10 +236,10 @@ async function importPlaylist(rawUrl, reply, res) {
 		return reply(200, out);
 	} catch (err) {
 		if (err instanceof ImportError) return reply(502, { error: err.message });
+		console.error("importPlaylist failed:", err);
 		return reply(502, { error: "Import failed. Try again later." });
 	}
 }
-
 
 class UpstreamError extends Error {
 	constructor(status, message) {
@@ -279,6 +284,23 @@ const geminiShape = (text) => ({
 	candidates: [{ content: { role: "model", parts: [{ text }] }, finishReason: "STOP" }],
 });
 
+const openaiCompat = (getBase, { stripThink = false, extra = () => ({}) } = {}) =>
+	async (key, model, turns, cfg, body) => {
+		const messages = turns.map((t) => ({ role: t.role, content: t.text }));
+		if (body.system) messages.unshift({ role: "system", content: String(body.system) });
+		const d = await upstream(getBase() + "/chat/completions", { Authorization: "Bearer " + key }, {
+			model,
+			messages,
+			temperature: cfg.temperature,
+			max_tokens: cfg.maxTokens,
+			stream: false,
+			...extra(model),
+		});
+		let text = (d && d.choices && d.choices[0] && d.choices[0].message && d.choices[0].message.content) || "";
+		if (stripThink) text = text.replace(/<think>[\s\S]*?<\/think>\s*/g, "").trim();
+		return geminiShape(text);
+	};
+
 const CALLERS = {
 	async gemini(key, model, turns, cfg, body) {
 		const contents = Array.isArray(body.contents)
@@ -296,19 +318,12 @@ const CALLERS = {
 		);
 	},
 
-	async deepseek(key, model, turns, cfg, body) {
-		const base = (process.env.DEEPSEEK_BASE_URL || "https://api.deepseek.com").replace(/\/$/, "");
-		const messages = turns.map((t) => ({ role: t.role, content: t.text }));
-		if (body.system) messages.unshift({ role: "system", content: String(body.system) });
-		const d = await upstream(base + "/chat/completions", { Authorization: "Bearer " + key }, {
-			model,
-			messages,
-			temperature: cfg.temperature,
-			max_tokens: cfg.maxTokens,
-			stream: false,
-		});
-		return geminiShape((d.choices && d.choices[0] && d.choices[0].message && d.choices[0].message.content) || "");
-	},
+	deepseek: openaiCompat(() => (process.env.DEEPSEEK_BASE_URL || "https://api.deepseek.com").replace(/\/$/, "")),
+
+	groq: openaiCompat(
+		() => (process.env.GROQ_BASE_URL || "https://api.groq.com/openai/v1").replace(/\/$/, ""),
+		{ stripThink: true }
+	),
 
 	async claude(key, model, turns, cfg, body) {
 		const base = (process.env.CLAUDE_BASE_URL || "https://api.anthropic.com").replace(/\/$/, "");
@@ -322,19 +337,6 @@ const CALLERS = {
 		const d = await upstream(base + "/v1/messages", { "x-api-key": key, "anthropic-version": "2023-06-01" }, payload);
 		return geminiShape((d.content || []).map((c) => (c.type === "text" ? c.text : "")).join(""));
 	},
-
-	async ollama(key, model, turns, cfg, body) {
-		const base = (process.env.OLLAMA_BASE_URL || "https://ollama.com").replace(/\/$/, "");
-		const messages = turns.map((t) => ({ role: t.role, content: t.text }));
-		if (body.system) messages.unshift({ role: "system", content: String(body.system) });
-		const d = await upstream(base + "/api/chat", { Authorization: "Bearer " + key }, {
-			model,
-			messages,
-			stream: false,
-			options: { temperature: cfg.temperature, num_predict: cfg.maxTokens },
-		});
-		return geminiShape((d.message && d.message.content) || "");
-	},
 };
 
 async function chat(body, reply, res) {
@@ -342,20 +344,28 @@ async function chat(body, reply, res) {
 
 	let provider = body.provider;
 	let model = body.model;
+	if (provider !== undefined && typeof provider !== "string") {
+		return reply(400, { error: { message: "Invalid provider" } });
+	}
+	if (model !== undefined && typeof model !== "string") {
+		return reply(400, { error: { message: "Invalid model" } });
+	}
 	if (!provider && model) {
 		provider = Object.keys(PROVIDERS).find((p) => PROVIDERS[p].models.includes(model));
 	}
 	if (!provider) {
 		provider = Object.keys(PROVIDERS).find((p) => listKeys(process.env[PROVIDERS[p].keys]).length) || "gemini";
 	}
-	const cfgP = PROVIDERS[provider];
-	if (!cfgP) return reply(400, { error: { message: "Unsupported provider dummy" } });
+	const cfgP = Object.hasOwn(PROVIDERS, provider) ? PROVIDERS[provider] : null;
+	if (!cfgP) return reply(400, { error: { message: "Unsupported provider: " + String(provider).slice(0, 50) } });
 	if (!model) model = cfgP.models[0];
-	if (!cfgP.models.includes(model)) return reply(400, { error: { message: "Unsupported model dummy" } });
+	if (!cfgP.models.includes(model)) {
+		return reply(400, { error: { message: "Unsupported model for " + provider + ": " + String(model).slice(0, 80) } });
+	}
 	body.model = model;
 
 	const keys = listKeys(process.env[cfgP.keys]);
-	if (!keys.length) return reply(500, { error: { message: "No worky so  it no fixy " + provider } });
+	if (!keys.length) return reply(500, { error: { message: "not working rn dum dum " + provider } });
 
 	const source = Array.isArray(body.messages)
 		? body.messages
@@ -376,27 +386,42 @@ async function chat(body, reply, res) {
 		temperature: clamp(body.temperature ?? gc.temperature, 0.7, 0, 2),
 		maxTokens: Math.round(clamp(body.max_tokens ?? gc.maxOutputTokens, 1024, 1, 8192)),
 	};
-	const turns = toTurns(body);
+	const turns = toTurns(body).filter((t) => t.text);
 	if (!turns.length) return reply(400, { error: { message: "Invalid messages" } });
+
+	const caller = CALLERS[provider];
+	if (typeof caller !== "function") {
+		console.error("No caller implemented for provider:", provider);
+		return reply(500, { error: { message: "Provider not implemented: " + provider } });
+	}
 
 	const start = Math.floor(Math.random() * keys.length);
 	let lastStatus = 502;
+	let lastMessage = "";
 	for (let i = 0; i < keys.length; i++) {
 		const key = keys[(start + i) % keys.length];
 		try {
-			const data = await CALLERS[provider](key, body.model, turns, cfg, body);
+			const data = await caller(key, body.model, turns, cfg, body);
 			res.setHeader("Cache-Control", "no-store");
 			return reply(200, data);
 		} catch (err) {
 			if (err instanceof UpstreamError) {
 				lastStatus = err.status;
+				lastMessage = err.message;
+				console.error("[" + provider + "/" + model + "] upstream " + err.status + ": " + err.message);
 				if (RETRY_STATUSES.includes(err.status)) continue;
 				return reply(err.status, { error: { message: err.message, status: err.status } });
 			}
+			console.error("[" + provider + "/" + model + "] unexpected error:", err);
 			lastStatus = 502;
 		}
 	}
-	return reply(503, { error: { message: "not allowed dum dum", status: lastStatus } });
+	return reply(503, {
+		error: {
+			message: "All keys for " + provider + " are exhausted, rate-limited, or failing" + (lastMessage ? ": " + lastMessage : ""),
+			status: lastStatus,
+		},
+	});
 }
 
 function listModels(reply, res) {
@@ -406,7 +431,6 @@ function listModels(reply, res) {
 	res.setHeader("Cache-Control", "no-store");
 	return reply(200, { providers });
 }
-
 
 export default async function handler(req, res) {
 	res.setHeader("Access-Control-Allow-Origin", process.env.ALLOWED_ORIGIN || "*");
@@ -448,5 +472,5 @@ export default async function handler(req, res) {
 	}
 
 	res.setHeader("Allow", "GET, POST");
-	return res.status(405).json({ error: { message: "not allowed dum dum" } });
+	return res.status(405).json({ error: { message: "method not allowed fucking dumbass" } });
 }
