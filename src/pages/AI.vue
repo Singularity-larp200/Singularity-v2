@@ -84,13 +84,14 @@ async function send() {
 
     <div class="aiInputArea" id="aiInputArea">
       <select
-        v-if="providers.length"
         v-model="selected"
         class="aiModelSelect"
         id="aiModel"
         name="model"
         aria-label="Choose model"
+        :disabled="!providers.length"
       >
+        <option v-if="!providers.length" value="" disabled>No models</option>
         <optgroup v-for="p in providers" :key="p.provider" :label="p.provider">
           <option v-for="m in p.models" :key="m" :value="p.provider + '|' + m">{{ m }}</option>
         </optgroup>
