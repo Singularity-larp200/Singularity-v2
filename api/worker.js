@@ -19,7 +19,7 @@ const PROVIDERS = {
 		keys: "GROQ_KEYS",
 		models: listKeys(process.env.GROQ_MODELS).length
 			? listKeys(process.env.GROQ_MODELS)
-			: ["qwen/qwen3-32b", "llama-3.3-70b-versatile"],
+			: ["openai/gpt-oss-120b"],
 	},
 };
 
