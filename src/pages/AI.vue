@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { Send } from '@lucide/vue';
+import { Send, ChevronDown } from '@lucide/vue';
 import { nextTick, onMounted, ref } from 'vue';
 
 const API_URL = '/api/worker';
@@ -23,7 +23,7 @@ onMounted(async () => {
     const first = providers.value[0];
     if (first && first.models.length) selected.value = first.provider + '|' + first.models[0];
   } catch (e) {
-    error.value = 'Could not load models.';
+    
   }
 });
 
@@ -83,19 +83,22 @@ async function send() {
     </div>
 
     <div class="aiInputArea" id="aiInputArea">
-      <select
-        v-model="selected"
-        class="aiModelSelect"
-        id="aiModel"
-        name="model"
-        aria-label="Choose model"
-        :disabled="!providers.length"
-      >
-        <option v-if="!providers.length" value="" disabled>No models</option>
-        <optgroup v-for="p in providers" :key="p.provider" :label="p.provider">
-          <option v-for="m in p.models" :key="m" :value="p.provider + '|' + m">{{ m }}</option>
-        </optgroup>
-      </select>
+      <div class="aiModelWrap">
+        <select
+          v-model="selected"
+          class="aiModelSelect"
+          id="aiModel"
+          name="model"
+          aria-label="Choose model"
+          :disabled="!providers.length"
+        >
+          <option v-if="!providers.length" value="" disabled>No models</option>
+          <optgroup v-for="p in providers" :key="p.provider" :label="p.provider">
+            <option v-for="m in p.models" :key="m" :value="p.provider + '|' + m">{{ m }}</option>
+          </optgroup>
+        </select>
+        <ChevronDown class="aiModelChevron" :size="16" />
+      </div>
       <input
         v-model="message"
         class="aiInput"
@@ -221,11 +224,30 @@ async function send() {
   }
 }
 
+.aiModelWrap {
+  position: relative;
+  display: flex;
+  flex-shrink: 0;
+  align-items: center;
+}
+
+.aiModelChevron {
+  position: absolute;
+  top: 50%;
+  right: 12px;
+  transform: translateY(-50%);
+  color: var(--sg-text-muted);
+  pointer-events: none;
+}
+
 .aiModelSelect {
+  -webkit-appearance: none;
+  appearance: none;
   flex-shrink: 0;
   max-width: 160px;
   height: 50px;
-  padding: 0 10px;
+  padding: 0 34px 0 14px;
+  line-height: 46px;
   box-sizing: border-box;
   border: 2px solid var(--sg-border);
   border-radius: 6px;
@@ -280,7 +302,7 @@ async function send() {
 @media (max-width: 600px) {
   .aiModelSelect {
     max-width: 110px;
-    padding: 0 6px;
+    padding: 0 28px 0 10px;
   }
 
   .aiMessages {
