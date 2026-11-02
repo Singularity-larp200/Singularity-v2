@@ -5,21 +5,23 @@ const listKeys = (value) => (value || "").split(",").map((s) => s.trim()).filter
 const PROVIDERS = {
 	gemini: {
 		keys: "GEMINI_KEYS",
-		models: ["gemini-3.8-flash", "gemini-3.6-flash", "gemini-3.5-flash"],
+		models: ["gemini-3.8-flash"],
 	},
 	deepseek: {
 		keys: "DEEPSEEK_KEYS",
-		models: ["deepseek-chat", "deepseek-reasoner"],
+		models: ["deepseek-chat"],
 	},
 	claude: {
 		keys: "CLAUDE_KEYS",
-		models: ["claude-sonnet-5-5", "claude-haiku-5-5", "claude-opus-5-5"],
+		models: ["claude-sonnet-5-5"],
 	},
 	groq: {
 		keys: "GROQ_KEYS",
-		models: listKeys(process.env.GROQ_MODELS).length
-			? listKeys(process.env.GROQ_MODELS)
-			: ["openai/gpt-oss-120b"],
+
+		get models() {
+			const m = listKeys(process.env.GROQ_MODELS);
+			return m.length ? m : ["openai/gpt-oss-120b"];
+		},
 	},
 };
 
@@ -358,8 +360,9 @@ async function chat(body, reply, res) {
 	}
 	const cfgP = Object.hasOwn(PROVIDERS, provider) ? PROVIDERS[provider] : null;
 	if (!cfgP) return reply(400, { error: { message: "Unsupported provider: " + String(provider).slice(0, 50) } });
-	if (!model) model = cfgP.models[0];
-	if (!cfgP.models.includes(model)) {
+	const models = cfgP.models;
+	if (!model) model = models[0];
+	if (!models.includes(model)) {
 		return reply(400, { error: { message: "Unsupported model for " + provider + ": " + String(model).slice(0, 80) } });
 	}
 	body.model = model;
@@ -432,7 +435,7 @@ function listModels(reply, res) {
 	return reply(200, { providers });
 }
 
-export default async function handler(req, res) {
+async function nodeHandler(req, res) {
 	res.setHeader("Access-Control-Allow-Origin", process.env.ALLOWED_ORIGIN || "*");
 	res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
 	res.setHeader("Access-Control-Allow-Headers", "Content-Type");
@@ -474,3 +477,51 @@ export default async function handler(req, res) {
 	res.setHeader("Allow", "GET, POST");
 	return res.status(405).json({ error: { message: "method not allowed fucking dumbass" } });
 }
+
+export default {
+	async fetch(request, env) {
+		globalThis.process ??= { env: {} };
+		process.env ??= {};
+		for (const [k, v] of Object.entries(env)) {
+			if (typeof v === "string") process.env[k] = v;
+		}
+
+		const url = new URL(request.url);
+		let body;
+		if (request.method === "POST") {
+			const ct = request.headers.get("content-type") || "";
+			body = ct.includes("octet-stream")
+				? Buffer.from(await request.arrayBuffer())
+				: await request.text();
+		}
+
+		const req = {
+			method: request.method,
+			headers: Object.fromEntries(request.headers),
+			query: Object.fromEntries(url.searchParams),
+			body,
+		};
+
+		return new Promise((resolve) => {
+			const headers = new Headers();
+			let code = 200;
+			const res = {
+				setHeader(k, v) { headers.set(k, v); },
+				status(c) { code = c; return res; },
+				json(o) {
+					headers.set("Content-Type", "application/json");
+					resolve(new Response(JSON.stringify(o), { status: code, headers }));
+				},
+				send(b) { resolve(new Response(b, { status: code, headers })); },
+				end() { resolve(new Response(null, { status: code, headers })); },
+			};
+			nodeHandler(req, res).catch((err) => {
+				console.error(err);
+				resolve(new Response(JSON.stringify({ error: { message: "Internal error" } }), {
+					status: 500,
+					headers: { "Content-Type": "application/json" },
+				}));
+			});
+		});
+	},
+};
