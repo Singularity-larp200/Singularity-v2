@@ -1,1 +1,0 @@
-{ "functions": { "api/worker.js": { "maxDuration": 60 } } }
